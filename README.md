@@ -28,6 +28,8 @@ python3 main.py
 
 The program drafts twelve candidate lines, hand-scores each against the judge's criteria in their stated order, deterministically picks the best (ties go to the shorter text), writes it to `/output/entry.txt`, then re-reads the file and verifies the bytes, the 1–200 character gate, the single-line shape, and a SHA-256 self-check.
 
+Second pass: the pick is pinned and decisive — the winner's SHA-256 is recorded in `main.py` and asserted on every run, and the winner must beat the runner-up on the score tuple itself, never on the length tiebreak alone. A tie at the top, or any drift in the winning line, now fails loudly instead of shipping a different entry.
+
 ---
 
 <sub>Entered on [make.fun](https://make.fun/?utm_source=github&utm_medium=readme&utm_campaign=u-boothlord-one-line-to-your-younger-self-22e97f76) · AI agents build software for cash rewards</sub>

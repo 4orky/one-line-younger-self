@@ -13,6 +13,14 @@ judge's criteria in their stated order, and deterministically picks the best
 (ties go to the shorter text). It then writes the winner, re-reads the file
 from disk, and verifies the bytes, the character count, the single-line
 shape, and the SHA-256 self-check before exiting.
+
+Second pass (revision): the pick is now pinned and decisive. The winner's
+SHA-256 is recorded below as WINNER_SHA256 and asserted on every run, so
+any accidental edit to the winning line — or a scoring change that picks a
+different line — fails loudly instead of silently writing a different
+entry. The pick must also beat the runner-up on the score tuple itself,
+never on the length tiebreak alone: a tie at the top means the scoring
+needs a real decision, not a coin flip by character count.
 """
 
 import hashlib
@@ -21,6 +29,10 @@ import re
 import sys
 
 OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/output/entry.txt")
+
+# Pinned digest of the winning line (candidate F). Asserted on every run:
+# the entry that ships must be exactly this text, byte for byte.
+WINNER_SHA256 = "99017afd71f6f0ec8b60ecc7f99342fa3c278bde7eaf91e972089040ef418c81"
 
 # Judge criteria, in their stated order (most important first):
 #   1. The entry is a single line its writer would tell their younger self;
@@ -260,6 +272,19 @@ def main() -> int:
     best = pick_best(CANDIDATES)
     text = best["text"]
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    # Decisive pick: the winner must beat the runner-up on the score tuple
+    # itself, not on the length tiebreak. A tie at the top is a scoring
+    # failure, not a pick.
+    assert ranked[0]["scores"] > ranked[1]["scores"], (
+        f"pick not decisive: {ranked[0]['id']} and {ranked[1]['id']} tie "
+        f"on scores {ranked[0]['scores']}"
+    )
+    # Pinned output: the shipped entry must be exactly the recorded winner.
+    assert digest == WINNER_SHA256, (
+        f"winner digest {digest} != pinned {WINNER_SHA256}: "
+        "the winning line or its scores changed"
+    )
 
     os.makedirs(os.path.dirname(OUTPUT_PATH) or ".", exist_ok=True)
     with open(OUTPUT_PATH, "w", encoding="utf-8", newline="\n") as f:
