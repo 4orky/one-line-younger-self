@@ -1,315 +1,214 @@
-#!/usr/bin/env python3
-"""One Line to Your Younger Self — make.fun program/v1 entry.
+# One line back to a younger self. This program picks a single
+# sentence to send to the writer's younger self and drops it into
+# /output/entry.txt. The brief it works from is the one the bounty
+# self rather than worn as a motto; it has to carry something only an
+# older self who lived that life could know; it has to land in one
+# breath, in a voice that sounds like a person talking; it has to hold
+# a turn or an image that lingers; and it has to be honest enough to
+# sting a little instead of going soft and sentimental. The
+# approach here is deliberately plain. A dozen lines were written
+# out by hand, each one graded on those five points in the order the
+# brief lists them, best first. A head-to-head comparator walks the
+# five grades in order and lets the first difference settle the
+# contest; when two lines grade identically on all five, the shorter
+# one goes first. The top line is then written out, read back from the
+# disk, and checked byte for byte against a digest recorded below, so
+# a slip anywhere between choosing and writing fails out loud instead
+# of shipping a different sentence.
 
-Writes the chosen single line to /output/entry.txt.
+from functools import cmp_to_key
+from hashlib import sha256
+from pathlib import Path
 
-Gate (competition.yaml): /output/entry.txt must be UTF-8 text of 1 to 200
-characters, not only white space. The entry is one line, in English, that
-its writer would send back to their younger self: no explanation, no
-context, no second sentence.
+DESTINATION = Path("/output/entry.txt")
 
-The program drafts twelve candidate lines by hand, scores each against the
-judge's criteria in their stated order, and deterministically picks the best
-(ties go to the shorter text). It then writes the winner, re-reads the file
-from disk, and verifies the bytes, the character count, the single-line
-shape, and the SHA-256 self-check before exiting.
+EXPECTED_DIGEST = "99017afd71f6f0ec8b60ecc7f99342fa3c278bde7eaf91e972089040ef418c81"
 
-Second pass (revision): the pick is now pinned and decisive. The winner's
-SHA-256 is recorded below as WINNER_SHA256 and asserted on every run, so
-any accidental edit to the winning line — or a scoring change that picks a
-different line — fails loudly instead of silently writing a different
-entry. The pick must also beat the runner-up on the score tuple itself,
-never on the length tiebreak alone: a tie at the top means the scoring
-needs a real decision, not a coin flip by character count.
-"""
+WINNING_LINE = "Call your mother back the night she rings twice and hangs up; she was rehearsing how to tell you."
 
-import hashlib
-import os
-import re
-import sys
+# The five points, in the order the brief weighs them:
+#   a. spoken to a younger self, not a slogan for anyone
+#   b. something only this older self could know, from a life lived
+#   c. one breath, a real voice, nothing explained twice
+#   d. a turn, an image, or a small surprise that stays
+#   e. honest and exact enough to sting, hard-won or warm, never sugary
+# Grades run 0 to 5 on each point, in that order. The winning line
+# below carries full marks on all five; every other line falls short
+# somewhere, and the note beside each says where. Each draft is a
+# four-part tuple: a short tag, the line itself, its five grades, and
+# a note on where it falls short of the winner.
 
-OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/output/entry.txt")
-
-# Pinned digest of the winning line (candidate F). Asserted on every run:
-# the entry that ships must be exactly this text, byte for byte.
-WINNER_SHA256 = "99017afd71f6f0ec8b60ecc7f99342fa3c278bde7eaf91e972089040ef418c81"
-
-# Judge criteria, in their stated order (most important first):
-#   1. The entry is a single line its writer would tell their younger self;
-#      a slogan, a quote, or a line addressed to nobody in particular loses
-#      to any line actually told to a younger self.
-#   2. It says something only this person's older self could say, drawn
-#      from a life actually lived rather than a motto anyone could wear.
-#   3. It lands in one breath, in a real voice, with no explaining and no
-#      second sentence doing the work.
-#   4. It carries a turn, an image, or a small surprise that stays after
-#      one reading.
-#   5. It is honest and specific enough to sting a little, hard-won or warm
-#      rather than sentimental.
-#
-# Scores below are hand-scores on a 0-5 scale per criterion, in order.
-# The total is lexicographic: criterion 1 outranks 2, 2 outranks 3, and so
-# on. Ties on the full tuple go to the shorter text.
-
-CANDIDATES = [
-    {
-        "id": "A",
-        "text": (
-            "Don't throw away the letters your grandmother writes you; "
-            "one day her handwriting will be the only voice of hers "
-            "you have left."
-        ),
-        # Specific (grandmother's letters, her handwriting) and the turn
-        # lands — handwriting as a voice — but "one day" does explanatory
-        # work, and the second clause spells out what the first only
-        # needed to imply.
-        "scores": (5, 4, 4, 4, 4),
-    },
-    {
-        "id": "B",
-        "text": (
-            "Keep the bike your father fixed with duct tape; the summer "
-            "it finally breaks is the summer you learn to fix things "
-            "yourself."
-        ),
-        # Duct tape is a real, lived detail, but the payoff drifts into
-        # motto territory: "learn to fix things yourself" is a lesson
-        # anyone could wear, and it explains the moment instead of
-        # letting it sting.
-        "scores": (5, 4, 3, 4, 3),
-    },
-    {
-        "id": "C",
-        "text": (
-            "Say yes when the girl in the red coat asks you to dance at "
-            "the winter formal; she says no to everyone else."
-        ),
-        # A sharp image (the red coat, the winter formal) and a genuine
-        # surprise in the second clause, but the shape is generic advice
-        # ("say yes when...") and the moment is one any teenager could
-        # have lived, not one only this older self knows.
-        "scores": (5, 4, 4, 5, 4),
-    },
-    {
-        "id": "D",
-        "text": (
-            "The night Dad doesn't come home, sit with Mum at the kitchen "
-            "table and don't try to fix it -- just stay."
-        ),
-        # Very lived: a named night, a kitchen table, a father who does
-        # not come home. It stings and it is warm. Slightly weaker on
-        # the turn: "just stay" is the lesson stated plainly rather than
-        # a surprise the reader has to catch.
-        "scores": (5, 5, 4, 4, 5),
-    },
-    {
-        "id": "E",
-        "text": (
-            "Don't sell your grandfather's watch to buy the car; the car "
-            "rusts, and the watch is the only thing of his you'll ever "
-            "hold again."
-        ),
-        # Concrete and hard-won (watch against car, rust against
-        # holding), and the last clause stings. The middle clause
-        # ("the car rusts") explains the trade instead of trusting the
-        # image, so it lands a fraction slower than the best.
-        "scores": (5, 5, 4, 5, 5),
-    },
-    {
-        "id": "F",
-        "text": (
-            "Call your mother back the night she rings twice and hangs "
-            "up; she was rehearsing how to tell you."
-        ),
-        # Revision (second pass): the first draft ended "she was
-        # practicing how to tell you." "Practicing" is vague — practicing
-        # the call itself, or the words? "Rehearsing" pins the image:
-        # a mother alone, running through the sentences of bad news
-        # before she dares to say them. The revision keeps the line at
-        # one sentence and one breath while making the turn exact.
-        # The strongest on every criterion in order: the double ring and
-        # the hang-up is a detail only this older self could know
-        # (criterion 2); 97 characters, one sentence, no explaining
-        # (criterion 3); the unsaid "what" is the surprise that stays
-        # (criterion 4); it stings without ever turning sentimental
-        # (criterion 5).
-        "scores": (5, 5, 5, 5, 5),
-    },
-    {
-        "id": "G",
-        "text": (
-            "When the teacher says you'll never amount to anything, keep "
-            "the note she wrote on your report -- you'll frame it."
-        ),
-        # "You'll frame it" is a good turn, but "you'll never amount to
-        # anything" is a cliche every school story uses, so the moment
-        # fails criterion 2: it could belong to anyone.
-        "scores": (5, 3, 4, 4, 3),
-    },
-    {
-        "id": "I",
-        "text": (
-            "The summer you turn sixteen, don't take the job at the mill "
-            "-- take the bus to the city and audition."
-        ),
-        # Specific summer, specific choice, but "audition" is vague about
-        # what for, and there is no turn and no sting: it reads as a
-        # fork in the road, not a line only an older self could write.
-        "scores": (5, 4, 4, 3, 3),
-    },
-    {
-        "id": "J",
-        "text": (
-            "Keep every ticket stub from the shows you sneak into; one "
-            "day you'll wish you could prove you were there."
-        ),
-        # Ticket stubs are a nice image, but "one day you'll wish" is
-        # generic regret language, and the payoff (proving you were
-        # there) is soft: it never says why being there mattered.
-        "scores": (5, 4, 4, 4, 3),
-    },
-    {
-        "id": "L",
-        "text": (
-            "Don't throw out the blue jumper with the hole in the elbow; "
-            "your daughter will wear it to her first day of school."
-        ),
-        # A lovely time-collapse: the jumper outlives its owner and
-        # reaches the next generation. Strong turn and image. It leans
-        # a touch sentimental for criterion 5 — warmth that asks to be
-        # admired rather than a line that stings.
-        "scores": (5, 5, 4, 5, 4),
-    },
-    {
-        "id": "N",
-        "text": (
-            "Write down what your grandfather says about the war the "
-            "night he finally talks; he never says it twice."
-        ),
-        # "He never says it twice" is a real turn and it stings. Weaker
-        # on the breath: "Write down what..." opens as an instruction,
-        # and the line carries two clauses where the best carries one
-        # thought.
-        "scores": (5, 5, 4, 4, 5),
-    },
-    {
-        "id": "O",
-        "text": (
-            "The morning you find the ring in your father's coat pocket, "
-            "put it back -- some questions are better asked by him."
-        ),
-        # A mystery with a good image (the ring, the coat pocket), but
-        # the second clause slides into aphorism: "some questions are
-        # better asked by him" is a motto anyone could wear, which
-        # costs it on criterion 2.
-        "scores": (5, 5, 4, 5, 4),
-    },
-]
+DRAFTS = (
+    (
+        "ice",
+        "Don't let go of the hand that steadied you on the ice; one winter it won't be there to hold.",
+        (5, 4, 5, 4, 4),
+        "The ice is a real memory, but the second half leans on a warning any parent could give, so it loses on lived detail and its turn is gentle rather than surprising.",
+    ),
+    (
+        "mixtape",
+        "Keep the mixtape she made you in the glovebox; the songs outlast the girl who chose them.",
+        (5, 5, 5, 5, 4),
+        "Nearly the best line here: the glovebox is exact, the turn lands, and it breathes as one thought. It only softens at the end, wistful where the winner stings.",
+    ),
+    (
+        "coach",
+        "When the coach cuts you in tenth grade, thank him — the empty afternoons are where you find the piano.",
+        (5, 4, 4, 5, 4),
+        "The thank-you twist is good, but being cut from a team could belong to anyone, and the piano payoff explains the moment instead of letting it land on its own.",
+    ),
+    (
+        "brother",
+        "Apologise to your brother before the graduation party ends; the grudge costs more than the fight did.",
+        (5, 4, 5, 4, 5),
+        "It stings, and the clock on it is real, but the second half states the lesson outright, so the turn never has to do any work of its own.",
+    ),
+    (
+        "lake",
+        "Don't trade the summer job at the lake for the office one; the lake is the last summer you'll be a kid.",
+        (5, 4, 4, 4, 4),
+        "A fond memory, yet the closing line is a motto in disguise: any summer, any kid, the same sentence fits.",
+    ),
+    (
+        "grandfather",
+        "Tell your grandfather you love him while he can still hear it; his hearing goes before his memory does.",
+        (5, 5, 4, 4, 5),
+        "Lived and sharp, but the line carries two thoughts where the best carries one, and the hearing-against-memory contrast arrives as an observation, not a surprise.",
+    ),
+    (
+        "dog",
+        "The night the dog dies, bury him under the oak yourself; grief you carry beats grief you dodge.",
+        (5, 5, 5, 4, 5),
+        "The oak is a true detail and the sentence breathes well, but its second half slides into a maxim, a rule for grieving that anyone could print on a card.",
+    ),
+    (
+        "town",
+        "Stop counting the days until you leave town; the leaving happens once, the missing lasts for years.",
+        (5, 3, 5, 4, 4),
+        "One breath and a clean shape, but leaving town is a story every teenager tells, with nothing in it that only this older self could have lived.",
+    ),
+    (
+        "laugh",
+        "Learn your father's laugh lines now, before the stroke takes the left side of his face.",
+        (5, 5, 4, 5, 4),
+        "The laugh lines are exact and the turn is a shock, yet the sentence leans on a medical event to do its feeling, and the sting fades into pity rather than holding firm.",
+    ),
+    (
+        "photo",
+        "Take the photo with the whole team, even the kid you hate; twenty years on he's the one you'll miss.",
+        (5, 4, 5, 5, 4),
+        "The hated kid in the photo is a fine twist, but the twenty-years-on payoff is a shape every reunion story uses, so the moment is not quite this person's alone.",
+    ),
+    (
+        "letters",
+        "Don't throw out the letters she never sent you; the unsent ones are the truest thing she wrote.",
+        (5, 5, 5, 5, 4),
+        "The unsent letters are a strong turn and the line is one clean breath, but it ends in admiration of its own image instead of leaving a mark the way the winner does.",
+    ),
+    (
+        "phone",
+        "Call your mother back the night she rings twice and hangs up; she was rehearsing how to tell you.",
+        (5, 5, 5, 5, 5),
+        "Full marks on all five: a direct instruction to one person, tonight; the double ring and the hang-up is a night only this older self could know; 97 characters in a single sentence with nothing explained; the turn is the word rehearsing, and the line never says what she had to tell, so the gap itself is the sting.",
+    ),
+)
 
 
-ABBREVIATIONS = ("Mrs.", "Mr.", "Ms.", "Dr.", "St.", "Jr.", "Sr.")
+def count_stops(line):
+    """How many sentence-ending marks a line carries."""
+    total = 0
+    for ch in line:
+        if ch in ".!?":
+            total += 1
+    return total
 
 
-def sentence_count(text: str) -> int:
-    """Count sentences (a sentence ends with . ! or ?).
-
-    Abbreviations such as "Mrs." are not sentence ends.
-    """
-    cleaned = text.strip()
-    for abbr in ABBREVIATIONS:
-        cleaned = cleaned.replace(abbr, abbr[:-1])
-    return len(re.findall(r"[.!?](?:\s|$)", cleaned))
-
-
-def check_candidate(candidate: dict) -> None:
-    """Validate one candidate against the gate and the one-line shape."""
-    text = candidate["text"]
-    assert 1 <= len(text) <= 200, f"{candidate['id']}: {len(text)} chars"
-    assert text.strip(), f"{candidate['id']}: blank"
-    assert "\n" not in text, f"{candidate['id']}: not a single line"
-    assert not text.endswith(" "), f"{candidate['id']}: trailing space"
-    assert sentence_count(text) == 1, (
-        f"{candidate['id']}: not one sentence: {text!r}"
-    )
-    assert len(candidate["scores"]) == 5, f"{candidate['id']}: scores"
+def vet_draft(draft):
+    """Refuse any draft that breaks the gate or the one-line shape."""
+    line = draft[1]
+    marks = draft[2]
+    if not 1 <= len(line) <= 200:
+        raise ValueError(draft[0] + ": length " + str(len(line)))
+    if not line.strip():
+        raise ValueError(draft[0] + ": empty")
+    if "\n" in line or "\r" in line:
+        raise ValueError(draft[0] + ": spans more than one line")
+    if line != line.strip():
+        raise ValueError(draft[0] + ": stray space at an end")
+    if count_stops(line) != 1:
+        raise ValueError(draft[0] + ": not a single sentence")
+    if len(marks) != 5:
+        raise ValueError(draft[0] + ": marks are not five long")
+    for mark in marks:
+        if not 0 <= mark <= 5:
+            raise ValueError(draft[0] + ": mark out of range")
 
 
-def check_all_unique(candidates) -> None:
-    """No two candidates may be byte-identical (the field dedupes them)."""
-    seen = {}
-    for candidate in candidates:
-        if candidate["text"] in seen:
-            raise AssertionError(
-                f"candidates {seen[candidate['text']]} and {candidate['id']} are identical"
-            )
-        seen[candidate["text"]] = candidate["id"]
+def vet_field(drafts):
+    """Every draft must be its own line; a repeat is a mistake."""
+    seen = set()
+    for draft in drafts:
+        if draft[1] in seen:
+            raise ValueError("repeated draft: " + draft[0])
+        seen.add(draft[1])
 
 
-def pick_best(candidates):
-    """Deterministic pick: best score tuple, ties go to the shorter text."""
-    ranked = sorted(
-        candidates,
-        key=lambda c: (tuple(-s for s in c["scores"]), len(c["text"])),
-    )
-    return ranked[0]
+def compare_drafts(left, right):
+    """Head-to-head: first differing grade decides; then shorter wins."""
+    for a, b in zip(left[2], right[2]):
+        if a != b:
+            return -1 if a > b else 1
+    if len(left[1]) != len(right[1]):
+        return -1 if len(left[1]) < len(right[1]) else 1
+    return (left[0] > right[0]) - (left[0] < right[0])
 
 
-def main() -> int:
-    for candidate in CANDIDATES:
-        check_candidate(candidate)
-    check_all_unique(CANDIDATES)
+def run():
+    for draft in DRAFTS:
+        vet_draft(draft)
+    vet_field(DRAFTS)
 
-    ranked = sorted(
-        CANDIDATES,
-        key=lambda c: (tuple(-s for s in c["scores"]), len(c["text"])),
-    )
-    for candidate in ranked:
-        print(
-            f"  {candidate['id']}: scores {candidate['scores']} "
-            f"chars {len(candidate['text'])}"
-        )
+    order = sorted(DRAFTS, key=cmp_to_key(compare_drafts))
+    for draft in order:
+        print("  " + draft[0] + " marks=" + str(draft[2]) + " len=" + str(len(draft[1])))
 
-    best = pick_best(CANDIDATES)
-    text = best["text"]
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    first = order[0]
+    second = order[1]
+    if not first[2] > second[2]:
+        raise AssertionError("top two tied on marks: " + first[0] + " and " + second[0])
 
-    # Decisive pick: the winner must beat the runner-up on the score tuple
-    # itself, not on the length tiebreak. A tie at the top is a scoring
-    # failure, not a pick.
-    assert ranked[0]["scores"] > ranked[1]["scores"], (
-        f"pick not decisive: {ranked[0]['id']} and {ranked[1]['id']} tie "
-        f"on scores {ranked[0]['scores']}"
-    )
-    # Pinned output: the shipped entry must be exactly the recorded winner.
-    assert digest == WINNER_SHA256, (
-        f"winner digest {digest} != pinned {WINNER_SHA256}: "
-        "the winning line or its scores changed"
-    )
+    chosen = first[1]
+    if chosen != WINNING_LINE:
+        raise AssertionError("chosen line drifted from the recorded winner")
+    digest = sha256(chosen.encode("utf-8")).hexdigest()
+    if digest != EXPECTED_DIGEST:
+        raise AssertionError("winner digest mismatch: " + digest)
 
-    os.makedirs(os.path.dirname(OUTPUT_PATH) or ".", exist_ok=True)
-    with open(OUTPUT_PATH, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
-    os.chmod(OUTPUT_PATH, 0o644)
+    DESTINATION.parent.mkdir(parents=True, exist_ok=True)
+    DESTINATION.write_bytes(chosen.encode("utf-8"))
+    DESTINATION.chmod(0o644)
 
-    # Re-read from disk and verify: bytes, length, shape, self-check.
-    with open(OUTPUT_PATH, "rb") as f:
-        raw = f.read()
-    on_disk = raw.decode("utf-8")
-    assert on_disk == text, "on-disk text differs from chosen text"
-    assert 1 <= len(on_disk) <= 200, "gate: length out of range"
-    assert on_disk.strip(), "gate: blank"
-    assert "\n" not in on_disk, "gate: not a single line"
-    assert sentence_count(on_disk) == 1, "gate: not one sentence"
-    assert hashlib.sha256(raw).hexdigest() == digest, "SHA-256 self-check failed"
+    blob = DESTINATION.read_bytes()
+    back = blob.decode("utf-8")
+    if back != chosen:
+        raise AssertionError("what came back off disk is not what was chosen")
+    if not 1 <= len(back) <= 200:
+        raise AssertionError("gate: length outside 1 to 200")
+    if not back.strip():
+        raise AssertionError("gate: blank entry")
+    if "\n" in back:
+        raise AssertionError("gate: entry is not one line")
+    if count_stops(back) != 1:
+        raise AssertionError("gate: entry is not one sentence")
+    if sha256(blob).hexdigest() != digest:
+        raise AssertionError("self-check: bytes on disk fail the digest")
 
-    print(f"picked: candidate {best['id']} (scores {best['scores']})")
-    print(f"chars: {len(text)}")
-    print(f"sha256: {digest}")
-    print(f"wrote: {OUTPUT_PATH}")
-    print("---")
-    print(text)
-    return 0
+    print("chosen: " + first[0] + " marks=" + str(first[2]))
+    print("length: " + str(len(chosen)))
+    print("sha256: " + digest)
+    print("wrote: " + str(DESTINATION))
+    print("=" * 24)
+    print(chosen)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+run()
